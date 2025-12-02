@@ -1,0 +1,78 @@
+name: Sync Upstream and Notify
+
+on:
+  # 定时执行：每小时检查一次
+  schedule:
+    - cron: '0 */3 * * *'  # 每3小时的第0分钟
+
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.PAT }}
+          fetch-depth: 0  # 获取完整历史
+
+      # 2. 配置 Git
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      # 3. 同步上游
+      - name: Sync with upstream
+        id: sync
+        run: |
+          # 添加上游仓库
+          git remote add upstream https://github.com/expo/expo.git || true
+          
+          # 获取上游更新
+          git fetch upstream
+          
+          # 记录同步前的 commit
+          BEFORE_COMMIT=$(git rev-parse HEAD)
+          echo "before_commit=$BEFORE_COMMIT" >> $GITHUB_OUTPUT
+          
+          # 合并上游主分支
+          git rebase upstream/main || {
+            echo "Merge failed, trying rebase"
+            git rebase upstream/main
+          }
+          
+          # 记录同步后的 commit
+          AFTER_COMMIT=$(git rev-parse HEAD)
+          echo "after_commit=$AFTER_COMMIT" >> $GITHUB_OUTPUT
+          
+          # 检查是否有更新
+          if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "✅ 检测到上游更新"
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ 已是最新版本"
+          fi
+          
+          # 推送到你的 Fork
+          git push origin main --force-with-lease
+      # 4. 输出更新信息
+      - name: Get update details
+        if: steps.sync.outputs.has_updates == 'true'
+        id: details
+        run: |
+          # 获取新增的提交列表
+          COMMITS=$(git log --oneline ${{ steps.sync.outputs.before_commit }}..${{ steps.sync.outputs.after_commit }})
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 获取变更的文件
+          FILES=$(git diff --name-only ${{ steps.sync.outputs.before_commit }}..${{ steps.sync.outputs.after_commit }})
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
